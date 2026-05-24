@@ -40,6 +40,20 @@ def web_search(query):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def run_command(command):
+    """Executes a shell command and returns the output."""
+    import subprocess
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        return {
+            "status": "success",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 # Define tools for OpenAI format
 JARVIS_TOOLS = [
     {
@@ -97,6 +111,20 @@ JARVIS_TOOLS = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Executes a shell command (e.g., 'python script.py').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to execute."}
+                },
+                "required": ["command"]
+            }
+        }
     }
 ]
 
@@ -110,5 +138,7 @@ def execute_tool(name, arguments):
         return write_file(**arguments)
     elif name == "web_search":
         return web_search(**arguments)
+    elif name == "run_command":
+        return run_command(**arguments)
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}

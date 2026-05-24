@@ -6,16 +6,15 @@ import random
 from pathlib import Path
 from brain import JarvisBrain
 from tools import JARVIS_TOOLS, execute_tool
+from memory import index_task_experience, retrieve_related_experiences
 
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
 brain = JarvisBrain()
 
 def calculate_cost(usage, model="gpt-4o"):
     """Calculates estimated cost based on usage object."""
-    # Prices per 1M tokens (GPT-4o)
     INPUT_PRICE = 5.00
     OUTPUT_PRICE = 15.00
-    
     if hasattr(usage, 'prompt_tokens'): # OpenAI
         in_tokens = usage.prompt_tokens
         out_tokens = usage.completion_tokens
@@ -24,7 +23,6 @@ def calculate_cost(usage, model="gpt-4o"):
         out_tokens = usage.output_tokens
     else:
         return 0.0, 0
-        
     cost = (in_tokens * (INPUT_PRICE / 1_000_000)) + (out_tokens * (OUTPUT_PRICE / 1_000_000))
     return cost, (in_tokens + out_tokens)
 
@@ -36,7 +34,6 @@ def process_tasks():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
-    # 1. Start tasks: Todo -> In Progress
     cursor = conn.execute("SELECT * FROM tasks WHERE status = 'todo' ORDER BY RANDOM() LIMIT 1")
     task = cursor.fetchone()
     
@@ -50,52 +47,69 @@ def process_tasks():
         conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?", (task_id,))
         conn.commit()
 
-        # REAL EXECUTION PHASE (WITH HANDS)
-        print(f"    [Brain] Executing task with tool access: {title}...")
-        system_prompt = (
-            f"You are the {assignee.capitalize()} Agent in the Jarvis Swarm. "
-            f"You have access to file system tools. Use them to investigate or complete the task if needed. "
-            f"If you write code, provide it in the final summary."
-        )
+        print(f"    [Brain] Executing task in multi-turn mode: {title}...")
         
-        prompt = f"Task: {title}\nDetails: {body}"
+        # Phase 7: Retrieve Related Experiences (RAG)
+        past_experiences = []
+        try:
+            past_experiences = retrieve_related_experiences(title)
+            print(f"    [Memory] Retrieved {len(past_experiences)} related experiences.")
+        except Exception as e:
+            print(f"    [Memory Error] Failed to retrieve: {e}")
+            
+        context_str = "\n\nPAST EXPERIENCES (Use these if relevant):\n" + "\n---\n".join(past_experiences) if past_experiences else ""
+
+        messages = [
+            {"role": "system", "content": f"You are the {assignee.capitalize()} Agent in the Jarvis Swarm. Use tools to complete your mission. MISSION: {title} DETAILS: {body} {context_str}"},
+            {"role": "user", "content": f"Please complete this task: {title}"}
+        ]
         
         total_tokens = 0
         total_cost = 0.0
+        execution_log = []
+        final_result = "No result generated."
         
         try:
-            # Step 1: Initial call to brain with tools
-            message, usage = brain.reason_with_tools(prompt, JARVIS_TOOLS, system_prompt)
-            c, t = calculate_cost(usage)
-            total_cost += c
-            total_tokens += t
-            
-            execution_log = []
-            
-            # Step 2: Handle potential tool calls
-            while message.tool_calls:
-                for tool_call in message.tool_calls:
-                    name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    
-                    print(f"    [Tool] Executing {name}({args})...")
-                    result = execute_tool(name, args)
-                    execution_log.append(f"Tool Call: {name}({args}) -> {result}")
+            # Multi-turn tool execution loop (Max 5 turns)
+            for turn in range(5):
+                provider, msg, usage = brain.chat_with_tools(messages, JARVIS_TOOLS)
                 
-                # After executing tools, we'll ask the brain for a final summary
-                summary_prompt = f"{prompt}\n\nExecution Log:\n" + "\n".join(execution_log) + "\n\nPlease provide a final report on what you did."
-                result, usage = brain.reason(summary_prompt, system_prompt)
                 c, t = calculate_cost(usage)
                 total_cost += c
                 total_tokens += t
-                break 
+                
+                # Append assistant message
+                messages.append({"role": "assistant", "content": msg.content})
+                
+                if msg.tool_calls:
+                    for tool_call in msg.tool_calls:
+                        name = tool_call.function.name
+                        args = json.loads(tool_call.function.arguments)
+                        print(f"    [Tool] Turn {turn+1} ({provider}): {name}({args})...")
+                        result = execute_tool(name, args)
+                        execution_log.append(f"Turn {turn+1} - {name}: {result}")
+                        
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": json.dumps(result)
+                        })
+                else:
+                    # Final answer received
+                    final_result = msg.content
+                    break
             else:
-                # No tools called, just reasoning
-                result = message.content
+                final_result = "Reached maximum execution turns (5). Task might be incomplete."
 
-            # Update the task body with the brain's output and log
+            # Phase 7: Index the successful experience
+            try:
+                index_task_experience(task_id, title, final_result)
+            except Exception as e:
+                print(f"    [Memory Error] Failed to index: {e}")
+
             log_str = "\n".join(execution_log)
-            new_body = f"{body}\n\n--- AGENT EXECUTION ---\n{result}\n\n--- TOOL LOG ---\n{log_str}"
+            new_body = f"{body}\n\n--- AGENT EXECUTION ---\n{final_result}\n\n--- TOOL LOG ---\n{log_str}"
             conn.execute("UPDATE tasks SET body = ?, status = 'done', tokens = ?, cost = ? WHERE id = ?", 
                          (new_body, total_tokens, total_cost, task_id))
             print(f"[✓] {assignee.upper()} completed Task #{task_id} (${total_cost:.4f})")
@@ -109,8 +123,7 @@ def process_tasks():
     conn.close()
 
 if __name__ == "__main__":
-    print("🚀 Starting REAL Worker Agent (Doer Mode - Telemetry Enabled)...")
+    print("🚀 Starting REAL Worker Agent (Autonomous Doer - Multi-Turn & Fallback Enabled)...")
     while True:
         process_tasks()
-        print("Waiting for next task cycle (60s)...")
-        time.sleep(60)
+        time.sleep(30)
