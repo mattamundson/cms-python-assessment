@@ -17,6 +17,13 @@ class JarvisBrain:
         else:
             return self._reason_openai(prompt, system_prompt)
 
+    def reason_with_tools(self, prompt, tools, system_prompt="You are Jarvis, a helpful AI assistant."):
+        if self.provider == "openai":
+            return self._reason_openai_tools(prompt, tools, system_prompt)
+        else:
+            # Fallback to normal reason if not supported or not implemented
+            return self.reason(prompt, system_prompt)
+
     def _reason_anthropic(self, prompt, system_prompt):
         response = self.anthropic_client.messages.create(
             model="claude-3-5-sonnet-20240620",
@@ -35,6 +42,21 @@ class JarvisBrain:
             ]
         )
         return response.choices[0].message.content
+
+    def _reason_openai_tools(self, prompt, tools, system_prompt):
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = self.openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            tools=tools,
+            tool_choice="auto"
+        )
+        
+        return response.choices[0].message
 
 if __name__ == "__main__":
     brain = JarvisBrain(provider="openai")

@@ -1,9 +1,11 @@
 import sqlite3
 import os
 import time
+import json
 import random
 from pathlib import Path
 from brain import JarvisBrain
+from tools import JARVIS_TOOLS, execute_tool
 
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
 brain = JarvisBrain()
@@ -30,22 +32,51 @@ def process_tasks():
         conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?", (task_id,))
         conn.commit()
 
-        # REAL REASONING PHASE
-        print(f"    [Brain] Reasoning about task: {title}...")
-        system_prompt = f"You are the {assignee.capitalize()} Agent in the Jarvis Swarm. " \
-                        f"Your goal is to process the following task. " \
-                        f"Provide a brief 'Action Plan' and if it's a coding task, provide the code."
+        # REAL EXECUTION PHASE (WITH HANDS)
+        print(f"    [Brain] Executing task with tool access: {title}...")
+        system_prompt = (
+            f"You are the {assignee.capitalize()} Agent in the Jarvis Swarm. "
+            f"You have access to file system tools. Use them to investigate or complete the task if needed. "
+            f"If you write code, provide it in the final summary."
+        )
         
-        prompt = f"Task: {title}\nDetails: {body}\n\nPlease provide your response in a way that I can save to the database."
+        prompt = f"Task: {title}\nDetails: {body}"
         
         try:
-            result = brain.reason(prompt, system_prompt)
-            # Update the task body with the brain's output
-            new_body = f"{body}\n\n--- AGENT EXECUTION ---\n{result}"
+            # Step 1: Initial call to brain with tools
+            message = brain.reason_with_tools(prompt, JARVIS_TOOLS, system_prompt)
+            
+            execution_log = []
+            
+            # Step 2: Handle potential tool calls
+            while message.tool_calls:
+                for tool_call in message.tool_calls:
+                    name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments)
+                    
+                    print(f"    [Tool] Executing {name}({args})...")
+                    result = execute_tool(name, args)
+                    execution_log.append(f"Tool Call: {name}({args}) -> {result}")
+                    
+                    # Note: In a production loop, we'd feed this back to the LLM. 
+                    # For this phase, we'll execute once and summarize to keep it simple but functional.
+                
+                # After executing tools, we'll ask the brain for a final summary
+                summary_prompt = f"{prompt}\n\nExecution Log:\n" + "\n".join(execution_log) + "\n\nPlease provide a final report on what you did."
+                result = brain.reason(summary_prompt, system_prompt)
+                break # Exit loop for now
+            else:
+                # No tools called, just reasoning
+                result = message.content
+
+            # Update the task body with the brain's output and log
+            log_str = "\n".join(execution_log)
+            new_body = f"{body}\n\n--- AGENT EXECUTION ---\n{result}\n\n--- TOOL LOG ---\n{log_str}"
             conn.execute("UPDATE tasks SET body = ?, status = 'done' WHERE id = ?", (new_body, task_id))
             print(f"[✓] {assignee.upper()} completed Task #{task_id}")
+            
         except Exception as e:
-            print(f"    [Error] Brain failed: {e}")
+            print(f"    [Error] Execution failed: {e}")
             conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
         
         conn.commit()
@@ -53,7 +84,7 @@ def process_tasks():
     conn.close()
 
 if __name__ == "__main__":
-    print("🚀 Starting REAL Worker Agent (Powered by OpenAI)...")
+    print("🚀 Starting REAL Worker Agent (Doer Mode - Tool Access Enabled)...")
     while True:
         process_tasks()
         print("Waiting for next task cycle (60s)...")
