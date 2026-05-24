@@ -4,11 +4,15 @@ import secrets
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pathlib import Path
 
 app = FastAPI(title="Jarvis Live Dashboard")
 security = HTTPBasic()
+
+# Mount outputs for charts
+app.mount("/outputs", StaticFiles(directory="C:/Users/mattm/Documents/cms-python-assessment/outputs"), name="outputs")
 
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
 
@@ -46,6 +50,21 @@ def list_tasks(username: str = Depends(authenticate)):
     conn.close()
     return {"tasks": tasks, "links": links}
 
+@app.get("/api/stats")
+def get_stats(username: str = Depends(authenticate)):
+    if not DB_PATH.exists():
+        return {"status_counts": {}, "assignee_counts": {}}
+    conn = get_db()
+    
+    cursor = conn.execute("SELECT status, COUNT(*) as count FROM tasks GROUP BY status")
+    status_counts = {row['status']: row['count'] for row in cursor.fetchall()}
+    
+    cursor = conn.execute("SELECT assignee, COUNT(*) as count FROM tasks GROUP BY assignee")
+    assignee_counts = {row['assignee']: row['count'] for row in cursor.fetchall()}
+    
+    conn.close()
+    return {"status_counts": status_counts, "assignee_counts": assignee_counts}
+
 @app.get("/", response_class=HTMLResponse)
 def index(username: str = Depends(authenticate)):
     return """
@@ -66,6 +85,7 @@ def index(username: str = Depends(authenticate)):
         .badge-researcher { background-color: #312e81; color: #c7d2fe; }
         .badge-designer { background-color: #581c87; color: #e9d5ff; }
         svg#swarm-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
+        .hidden { display: none; }
     </style>
 </head>
 <body class="p-8">
@@ -80,40 +100,136 @@ def index(username: str = Depends(authenticate)):
         </div>
     </header>
 
-    <div class="relative">
-        <svg id="swarm-lines"></svg>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 relative z-10">
-            <div>
-                <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Triage</h2>
-                <div id="col-triage" class="status-column"></div>
+    <nav class="flex gap-4 mb-8 border-b border-zinc-800 pb-4">
+        <button onclick="showView('kanban')" class="text-sm font-medium hover:text-blue-500 transition-colors" id="btn-kanban">Kanban Board</button>
+        <button onclick="showView('analytics')" class="text-sm font-medium hover:text-blue-500 transition-colors text-zinc-500" id="btn-analytics">Analytics & CMS</button>
+    </nav>
+
+    <!-- Kanban View -->
+    <div id="view-kanban">
+        <div class="flex gap-4 mb-6">
+            <input type="text" id="search-input" placeholder="Search tasks..." class="bg-zinc-800 border border-zinc-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500 w-64">
+            <select id="assignee-filter" class="bg-zinc-800 border border-zinc-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500">
+                <option value="all">All Assignees</option>
+                <option value="programmer">Programmer</option>
+                <option value="researcher">Researcher</option>
+                <option value="designer">Designer</option>
+            </select>
+        </div>
+
+        <div class="relative">
+            <svg id="swarm-lines"></svg>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 relative z-10">
+                <div>
+                    <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Triage</h2>
+                    <div id="col-triage" class="status-column"></div>
+                </div>
+                <div>
+                    <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Todo</h2>
+                    <div id="col-todo" class="status-column"></div>
+                </div>
+                <div>
+                    <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">In Progress</h2>
+                    <div id="col-in_progress" class="status-column"></div>
+                </div>
+                <div>
+                    <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Done</h2>
+                    <div id="col-done" class="status-column"></div>
+                </div>
             </div>
-            <div>
-                <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Todo</h2>
-                <div id="col-todo" class="status-column"></div>
+        </div>
+    </div>
+
+    <!-- Analytics View -->
+    <div id="view-analytics" class="hidden">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
+                <h2 class="text-lg font-bold mb-4">Swarm Statistics</h2>
+                <div id="stats-container" class="space-y-4">
+                    <!-- Stats will be rendered here -->
+                </div>
             </div>
-            <div>
-                <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">In Progress</h2>
-                <div id="col-in_progress" class="status-column"></div>
-            </div>
-            <div>
-                <h2 class="text-sm font-semibold mb-4 text-zinc-500 uppercase tracking-wider">Done</h2>
-                <div id="col-done" class="status-column"></div>
+            <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
+                <h2 class="text-lg font-bold mb-4">CMS Medicare Analysis</h2>
+                <img src="/outputs/markup_distribution.png" alt="Markup Distribution" class="rounded border border-zinc-800">
+                <p class="text-xs text-zinc-500 mt-2 italic">Source: outputs/markup_distribution.png</p>
             </div>
         </div>
     </div>
 
     <script>
+        let currentTasks = [];
+        let currentLinks = [];
+        let currentView = 'kanban';
+
+        function showView(view) {
+            currentView = view;
+            document.getElementById('view-kanban').classList.toggle('hidden', view !== 'kanban');
+            document.getElementById('view-analytics').classList.toggle('hidden', view !== 'analytics');
+            
+            document.getElementById('btn-kanban').classList.toggle('text-blue-500', view === 'kanban');
+            document.getElementById('btn-kanban').classList.toggle('text-zinc-500', view !== 'kanban');
+            document.getElementById('btn-analytics').classList.toggle('text-blue-500', view === 'analytics');
+            document.getElementById('btn-analytics').classList.toggle('text-zinc-500', view !== 'analytics');
+
+            if (view === 'analytics') fetchStats();
+        }
+
         async function fetchTasks() {
             try {
                 const res = await fetch('/api/tasks');
                 if (res.status === 401) { window.location.reload(); return; }
                 const data = await res.json();
-                renderTasks(data.tasks);
-                setTimeout(() => renderLinks(data.links), 100);
+                currentTasks = data.tasks;
+                currentLinks = data.links;
+                if (currentView === 'kanban') applyFiltersAndRender();
                 document.getElementById('last-update').innerText = 'Sync OK: ' + new Date().toLocaleTimeString();
             } catch (e) {
                 console.error('Fetch failed', e);
             }
+        }
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const stats = await res.json();
+                renderStats(stats);
+            } catch (e) {
+                console.error('Stats fetch failed', e);
+            }
+        }
+
+        function renderStats(stats) {
+            const container = document.getElementById('stats-container');
+            let html = '<div class="grid grid-cols-2 gap-4">';
+            
+            html += '<div><h3 class="text-sm font-semibold text-zinc-500 uppercase mb-2">By Status</h3>';
+            for (const [status, count] of Object.entries(stats.status_counts)) {
+                html += `<div class="flex justify-between text-sm py-1 border-b border-zinc-800"><span>${status}</span><span class="font-mono text-blue-500">${count}</span></div>`;
+            }
+            html += '</div>';
+
+            html += '<div><h3 class="text-sm font-semibold text-zinc-500 uppercase mb-2">By Assignee</h3>';
+            for (const [assignee, count] of Object.entries(stats.assignee_counts)) {
+                html += `<div class="flex justify-between text-sm py-1 border-b border-zinc-800"><span>${assignee}</span><span class="font-mono text-blue-500">${count}</span></div>`;
+            }
+            html += '</div></div>';
+            
+            container.innerHTML = html;
+        }
+
+        function applyFiltersAndRender() {
+            const searchTerm = document.getElementById('search-input').value.toLowerCase();
+            const assigneeFilter = document.getElementById('assignee-filter').value;
+
+            const filteredTasks = currentTasks.filter(task => {
+                const matchesSearch = task.title.toLowerCase().includes(searchTerm) || (task.body && task.body.toLowerCase().includes(searchTerm));
+                const matchesAssignee = assigneeFilter === 'all' || task.assignee === assigneeFilter;
+                return matchesSearch && matchesAssignee;
+            });
+
+            renderTasks(filteredTasks);
+            setTimeout(() => renderLinks(currentLinks), 100);
         }
 
         function renderTasks(tasks) {
@@ -133,11 +249,11 @@ def index(username: str = Depends(authenticate)):
                 card.id = `task-${task.id}`;
                 card.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
-                        <span class="text-xs text-zinc-500 font-mono">#\${task.id}</span>
-                        <span class="badge badge-\${task.assignee}">\${task.assignee}</span>
+                        <span class="text-xs text-zinc-500 font-mono">#${task.id}</span>
+                        <span class="badge badge-${task.assignee}">${task.assignee}</span>
                     </div>
-                    <h3 class="text-sm font-medium mb-1">\${task.title}</h3>
-                    <p class="text-xs text-zinc-400 line-clamp-2">\${task.body || ''}</p>
+                    <h3 class="text-sm font-medium mb-1">${task.title}</h3>
+                    <p class="text-xs text-zinc-400 line-clamp-2">${task.body || ''}</p>
                 `;
                 col.appendChild(card);
             });
@@ -146,15 +262,15 @@ def index(username: str = Depends(authenticate)):
         function renderLinks(links) {
             const svg = document.getElementById('swarm-lines');
             const board = document.querySelector('.grid');
-            if (!board) return;
+            if (!board || currentView !== 'kanban') return;
             const boardRect = board.getBoundingClientRect();
             svg.setAttribute('width', boardRect.width);
             svg.setAttribute('height', boardRect.height);
             svg.innerHTML = '';
             
             links.forEach(link => {
-                const parent = document.getElementById(`task-\${link.parent_id}`);
-                const child = document.getElementById(`task-\${link.child_id}`);
+                const parent = document.getElementById(`task-${link.parent_id}`);
+                const child = document.getElementById(`task-${link.child_id}`);
                 
                 if (parent && child) {
                     const pRect = parent.getBoundingClientRect();
@@ -174,7 +290,10 @@ def index(username: str = Depends(authenticate)):
             });
         }
 
-        window.addEventListener('resize', fetchTasks);
+        document.getElementById('search-input').addEventListener('input', applyFiltersAndRender);
+        document.getElementById('assignee-filter').addEventListener('change', applyFiltersAndRender);
+
+        window.addEventListener('resize', applyFiltersAndRender);
         setInterval(fetchTasks, 5000);
         fetchTasks();
     </script>
