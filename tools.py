@@ -54,6 +54,31 @@ def run_command(command):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def run_python(code):
+    """Executes Python code in a sandbox and returns results or tracebacks."""
+    import subprocess
+    import tempfile
+    import os
+    
+    # Create a temporary file for the script
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(code)
+        temp_path = f.name
+    
+    try:
+        result = subprocess.run(['python', temp_path], capture_output=True, text=True, timeout=30)
+        return {
+            "status": "success" if result.returncode == 0 else "failure",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
 # Define tools for OpenAI format
 JARVIS_TOOLS = [
     {
@@ -125,6 +150,20 @@ JARVIS_TOOLS = [
                 "required": ["command"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_python",
+            "description": "Executes raw Python code and returns the output. Use this to test code before writing it to a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "The Python code to execute."}
+                },
+                "required": ["code"]
+            }
+        }
     }
 ]
 
@@ -140,5 +179,7 @@ def execute_tool(name, arguments):
         return web_search(**arguments)
     elif name == "run_command":
         return run_command(**arguments)
+    elif name == "run_python":
+        return run_python(**arguments)
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}
