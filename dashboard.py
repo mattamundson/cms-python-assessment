@@ -65,6 +65,14 @@ def get_stats(username: str = Depends(authenticate)):
     conn.close()
     return {"status_counts": status_counts, "assignee_counts": assignee_counts}
 
+@app.post("/api/tasks/{task_id}/triage")
+def trigger_triage(task_id: str, username: str = Depends(authenticate)):
+    from triage_agent import process_triage_task
+    success = process_triage_task(task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Task not found or not in triage")
+    return {"status": "success", "message": f"Task {task_id} triaged"}
+
 @app.get("/", response_class=HTMLResponse)
 def index(username: str = Depends(authenticate)):
     return """
@@ -175,6 +183,29 @@ def index(username: str = Depends(authenticate)):
             if (view === 'analytics') fetchStats();
         }
 
+        async function triageTask(taskId) {
+            try {
+                const res = await fetch(`/api/tasks/${taskId}/triage`, { method: 'POST' });
+                if (res.ok) {
+                    fetchTasks();
+                    showNotification('Task triaged successfully');
+                }
+            } catch (e) {
+                console.error('Triage failed', e);
+            }
+        }
+
+        function showNotification(msg) {
+            const toast = document.createElement('div');
+            toast.className = 'fixed bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded shadow-lg z-50 text-sm font-medium transition-opacity';
+            toast.innerText = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 500);
+            }, 3000);
+        }
+
         async function fetchTasks() {
             try {
                 const res = await fetch('/api/tasks');
@@ -247,6 +278,12 @@ def index(username: str = Depends(authenticate)):
                 const card = document.createElement('div');
                 card.className = 'task-card';
                 card.id = `task-${task.id}`;
+                
+                let actions = '';
+                if (task.status === 'triage') {
+                    actions = `<button onclick="event.stopPropagation(); triageTask('${task.id}')" class="mt-3 text-[10px] bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded transition-colors uppercase font-bold">Manual Triage</button>`;
+                }
+
                 card.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
                         <span class="text-xs text-zinc-500 font-mono">#${task.id}</span>
@@ -254,6 +291,7 @@ def index(username: str = Depends(authenticate)):
                     </div>
                     <h3 class="text-sm font-medium mb-1">${task.title}</h3>
                     <p class="text-xs text-zinc-400 line-clamp-2">${task.body || ''}</p>
+                    ${actions}
                 `;
                 col.appendChild(card);
             });

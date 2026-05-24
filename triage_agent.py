@@ -5,6 +5,47 @@ from pathlib import Path
 
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
 
+def process_triage_task(task_id):
+    """Processes a single task from triage to todo."""
+    if not DB_PATH.exists():
+        return False
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    
+    cursor = conn.execute("SELECT * FROM tasks WHERE id = ? AND status = 'triage'", (task_id,))
+    task = cursor.fetchone()
+    
+    if not task:
+        conn.close()
+        return False
+
+    title = task['title']
+    assignee = task['assignee']
+
+    print(f"[*] Manually Triaging Task #{task_id}: {title}")
+
+    # Simulate decomposition
+    sub_task_id = f"{task_id}-impl"
+    sub_task_title = f"[IMPL] {title}"
+    sub_task_body = f"Decomposed implementation step for: {title}"
+    
+    conn.execute("""
+        INSERT OR REPLACE INTO tasks (id, title, body, status, assignee)
+        VALUES (?, ?, ?, 'todo', ?)
+    """, (sub_task_id, sub_task_title, sub_task_body, assignee))
+
+    conn.execute("""
+        INSERT OR REPLACE INTO task_links (parent_id, child_id)
+        VALUES (?, ?)
+    """, (task_id, sub_task_id))
+
+    conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
+    
+    conn.commit()
+    conn.close()
+    return True
+
 def process_triage():
     if not DB_PATH.exists():
         print("Database not found.")
@@ -14,48 +55,19 @@ def process_triage():
     conn.row_factory = sqlite3.Row
     
     # 1. Fetch triaged tasks
-    cursor = conn.execute("SELECT * FROM tasks WHERE status = 'triage'")
-    triaged_tasks = cursor.fetchall()
+    cursor = conn.execute("SELECT id FROM tasks WHERE status = 'triage'")
+    triaged_ids = [row['id'] for row in cursor.fetchall()]
+    conn.close()
     
-    if not triaged_tasks:
+    if not triaged_ids:
         print("No tasks in Triage.")
-        conn.close()
         return
 
-    print(f"Processing {len(triaged_tasks)} tasks from Triage...")
+    print(f"Processing {len(triaged_ids)} tasks from Triage...")
+    for tid in triaged_ids:
+        process_triage_task(tid)
 
-    for task in triaged_tasks:
-        task_id = task['id']
-        title = task['title']
-        assignee = task['assignee']
-
-        print(f"[*] Processing Task #{task_id}: {title}")
-
-        # 2. Simulate decomposition
-        # In a real scenario, this would involve LLM reasoning.
-        # Here we simulate creating a specific "Implementation" sub-task.
-        sub_task_id = f"{task_id}-impl"
-        sub_task_title = f"[IMPL] {title}"
-        sub_task_body = f"Decomposed implementation step for: {title}"
-        
-        # Insert sub-task
-        conn.execute("""
-            INSERT OR REPLACE INTO tasks (id, title, body, status, assignee)
-            VALUES (?, ?, ?, 'todo', ?)
-        """, (sub_task_id, sub_task_title, sub_task_body, assignee))
-
-        # Create link
-        conn.execute("""
-            INSERT OR REPLACE INTO task_links (parent_id, child_id)
-            VALUES (?, ?)
-        """, (task_id, sub_task_id))
-
-        # 3. Move parent to todo
-        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
-
-    conn.commit()
     print("Triage processing complete.")
-    conn.close()
 
 if __name__ == "__main__":
     while True:
