@@ -9,6 +9,21 @@ from brain import JarvisBrain
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
 brain = JarvisBrain()
 
+def calculate_cost(usage, model="gpt-4o"):
+    """Calculates estimated cost based on usage object."""
+    INPUT_PRICE = 5.00
+    OUTPUT_PRICE = 15.00
+    if hasattr(usage, 'prompt_tokens'): # OpenAI
+        in_tokens = usage.prompt_tokens
+        out_tokens = usage.completion_tokens
+    elif hasattr(usage, 'input_tokens'): # Anthropic
+        in_tokens = usage.input_tokens
+        out_tokens = usage.output_tokens
+    else:
+        return 0.0, 0
+    cost = (in_tokens * (INPUT_PRICE / 1_000_000)) + (out_tokens * (OUTPUT_PRICE / 1_000_000))
+    return cost, (in_tokens + out_tokens)
+
 def process_triage_task(task_id):
     """Processes a single task from triage to todo using LLM decomposition."""
     if not DB_PATH.exists():
@@ -30,7 +45,6 @@ def process_triage_task(task_id):
 
     print(f"[*] Chief Orchestrator planning Task #{task_id}: {title}")
 
-    # REAL DECOMPOSITION PHASE
     system_prompt = (
         "You are the Chief Orchestrator of the Jarvis Swarm. "
         "Your goal is to take a high-level task and decompose it into 2-4 actionable sub-tasks. "
@@ -41,7 +55,9 @@ def process_triage_task(task_id):
     prompt = f"Decompose this task: {title}\nDetails: {body}"
     
     try:
-        response = brain.reason(prompt, system_prompt)
+        response, usage = brain.reason(prompt, system_prompt)
+        cost, tokens = calculate_cost(usage)
+        
         # Strip potential markdown formatting from JSON
         clean_response = response.replace('```json', '').replace('```', '').strip()
         sub_tasks = json.loads(clean_response)
@@ -58,13 +74,12 @@ def process_triage_task(task_id):
                 VALUES (?, ?)
             """, (task_id, sub_id))
 
-        # Move parent to todo
-        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
-        print(f"    [✓] Decomposed into {len(sub_tasks)} sub-tasks.")
+        # Move parent to todo and record telemetry
+        conn.execute("UPDATE tasks SET status = 'todo', tokens = ?, cost = ? WHERE id = ?", (tokens, cost, task_id))
+        print(f"    [✓] Decomposed into {len(sub_tasks)} sub-tasks (${cost:.4f}).")
         
     except Exception as e:
         print(f"    [Error] Planning failed: {e}")
-        # Fallback: Move to todo without decomposition
         conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
     
     conn.commit()
@@ -94,7 +109,7 @@ def process_triage():
     print("Triage cycle complete.")
 
 if __name__ == "__main__":
-    print("🚀 Starting REAL Planning Agent (Chief Orchestrator)...")
+    print("🚀 Starting REAL Planning Agent (Chief Orchestrator - Telemetry Enabled)...")
     while True:
         process_triage()
         print("Sleeping for 30 minutes...")

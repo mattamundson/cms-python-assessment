@@ -31,7 +31,8 @@ class JarvisBrain:
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.content[0].text
+        # Anthropic usage: response.usage.input_tokens, response.usage.output_tokens
+        return response.content[0].text, response.usage
 
     def _reason_openai(self, prompt, system_prompt):
         response = self.openai_client.chat.completions.create(
@@ -41,7 +42,7 @@ class JarvisBrain:
                 {"role": "user", "content": prompt}
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, response.usage
 
     def _reason_openai_tools(self, prompt, tools, system_prompt):
         messages = [
@@ -56,7 +57,7 @@ class JarvisBrain:
             tool_choice="auto"
         )
         
-        return response.choices[0].message
+        return response.choices[0].message, response.usage
 
 if __name__ == "__main__":
     brain = JarvisBrain(provider="openai")

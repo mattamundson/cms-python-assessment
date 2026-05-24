@@ -72,7 +72,7 @@ def create_task(task: TaskCreate, username: str = Depends(authenticate)):
 @app.get("/api/stats")
 def get_stats(username: str = Depends(authenticate)):
     if not DB_PATH.exists():
-        return {"status_counts": {}, "assignee_counts": {}}
+        return {"status_counts": {}, "assignee_counts": {}, "total_tokens": 0, "total_cost": 0.0}
     conn = get_db()
     
     cursor = conn.execute("SELECT status, COUNT(*) as count FROM tasks GROUP BY status")
@@ -80,9 +80,19 @@ def get_stats(username: str = Depends(authenticate)):
     
     cursor = conn.execute("SELECT assignee, COUNT(*) as count FROM tasks GROUP BY assignee")
     assignee_counts = {row['assignee']: row['count'] for row in cursor.fetchall()}
+
+    cursor = conn.execute("SELECT SUM(tokens) as total_tokens, SUM(cost) as total_cost FROM tasks")
+    row = cursor.fetchone()
+    total_tokens = row['total_tokens'] or 0
+    total_cost = row['total_cost'] or 0.0
     
     conn.close()
-    return {"status_counts": status_counts, "assignee_counts": assignee_counts}
+    return {
+        "status_counts": status_counts, 
+        "assignee_counts": assignee_counts,
+        "total_tokens": total_tokens,
+        "total_cost": total_cost
+    }
 
 @app.post("/api/tasks/{task_id}/triage")
 def trigger_triage(task_id: str, username: str = Depends(authenticate)):
@@ -295,8 +305,9 @@ def index(username: str = Depends(authenticate)):
 
         function renderStats(stats) {
             const container = document.getElementById('stats-container');
-            let html = '<div class="grid grid-cols-2 gap-4">';
+            let html = '<div class="grid grid-cols-1 gap-6">';
             
+            html += '<div class="grid grid-cols-2 gap-4">';
             html += '<div><h3 class="text-sm font-semibold text-zinc-500 uppercase mb-2">By Status</h3>';
             for (const [status, count] of Object.entries(stats.status_counts)) {
                 html += `<div class="flex justify-between text-sm py-1 border-b border-zinc-800"><span>${status}</span><span class="font-mono text-blue-500">${count}</span></div>`;
@@ -308,6 +319,14 @@ def index(username: str = Depends(authenticate)):
                 html += `<div class="flex justify-between text-sm py-1 border-b border-zinc-800"><span>${assignee}</span><span class="font-mono text-blue-500">${count}</span></div>`;
             }
             html += '</div></div>';
+
+            html += '<div class="bg-zinc-800/50 p-4 rounded border border-zinc-700">';
+            html += '<h3 class="text-sm font-semibold text-zinc-400 uppercase mb-3">Operational Costs</h3>';
+            html += `<div class="flex justify-between items-center mb-2"><span>Total Tokens Consumed</span><span class="font-mono text-lg text-blue-400">${stats.total_tokens.toLocaleString()}</span></div>`;
+            html += `<div class="flex justify-between items-center"><span>Total Swarm Cost (USD)</span><span class="font-mono text-lg text-green-500">$${stats.total_cost.toFixed(4)}</span></div>`;
+            html += '</div>';
+            
+            html += '</div>';
             
             container.innerHTML = html;
         }
