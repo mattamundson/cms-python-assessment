@@ -5,7 +5,7 @@ import json
 import random
 from pathlib import Path
 from brain import JarvisBrain
-from tools import JARVIS_TOOLS, execute_tool
+from tools import JARVIS_TOOLS, execute_tool, PROJECT_ROOT
 from memory import index_task_experience, retrieve_related_experiences
 
 DB_PATH = Path(os.path.expanduser("~/.hermes/kanban.db"))
@@ -60,8 +60,15 @@ def process_tasks():
             
         context_str = "\n\nPAST EXPERIENCES (Use these if relevant):\n" + "\n---\n".join(past_experiences) if past_experiences else ""
 
+        system_msg = f"""You are the {assignee.capitalize()} Agent in the Jarvis Swarm. 
+        Your HOME BASE (PROJECT_ROOT) is: {PROJECT_ROOT}
+        Always use relative paths for files. 
+        MISSION: {title} 
+        DETAILS: {body} 
+        {context_str}"""
+
         messages = [
-            {"role": "system", "content": f"You are the {assignee.capitalize()} Agent in the Jarvis Swarm. Use tools to complete your mission. MISSION: {title} DETAILS: {body} {context_str}"},
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": f"Please complete this task: {title}"}
         ]
         
@@ -71,8 +78,8 @@ def process_tasks():
         final_result = "No result generated."
         
         try:
-            # Multi-turn tool execution loop (Max 5 turns)
-            for turn in range(5):
+            # Multi-turn tool execution loop (Max 12 turns for complex logic)
+            for turn in range(12):
                 provider, msg, usage = brain.chat_with_tools(messages, JARVIS_TOOLS)
                 
                 c, t = calculate_cost(usage)
@@ -101,7 +108,7 @@ def process_tasks():
                     final_result = msg.content
                     break
             else:
-                final_result = "Reached maximum execution turns (5). Task might be incomplete."
+                final_result = "Reached maximum execution turns (12). Task might be incomplete."
 
             # Phase 7: Index the successful experience
             try:
