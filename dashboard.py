@@ -1,12 +1,18 @@
 import sqlite3
 import os
 import secrets
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import uvicorn
 from pathlib import Path
+
+class TaskCreate(BaseModel):
+    title: str
+    body: str = ""
+    assignee: str = "programmer"
 
 app = FastAPI(title="Jarvis Live Dashboard")
 security = HTTPBasic()
@@ -49,6 +55,19 @@ def list_tasks(username: str = Depends(authenticate)):
     
     conn.close()
     return {"tasks": tasks, "links": links}
+
+@app.post("/api/tasks")
+def create_task(task: TaskCreate, username: str = Depends(authenticate)):
+    import uuid
+    conn = get_db()
+    task_id = str(uuid.uuid4())[:8]
+    conn.execute("""
+        INSERT INTO tasks (id, title, body, status, assignee)
+        VALUES (?, ?, ?, 'triage', ?)
+    """, (task_id, task.title, task.body, task.assignee))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "task_id": task_id}
 
 @app.get("/api/stats")
 def get_stats(username: str = Depends(authenticate)):
@@ -94,22 +113,31 @@ def index(username: str = Depends(authenticate)):
         .badge-designer { background-color: #581c87; color: #e9d5ff; }
         svg#swarm-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
         .hidden { display: none; }
+        .tree-node { position: relative; margin-left: 2rem; border-left: 2px solid #3f3f46; padding-left: 1.5rem; }
+        .tree-card { background-color: #18181b; border: 1px solid #27272a; border-radius: 6px; padding: 8px; margin-bottom: 8px; max-width: 400px; }
     </style>
 </head>
 <body class="p-8">
     <header class="flex justify-between items-center mb-8">
-        <div>
-            <h1 class="text-2xl font-bold tracking-tight text-blue-500">⚕️ Jarvis Live Dashboard</h1>
-            <p class="text-zinc-400">Real-time Hermes Swarm & Kanban</p>
+        <div class="flex items-center gap-6">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight text-blue-500">⚕️ Jarvis Live Dashboard</h1>
+                <p class="text-zinc-400 text-xs">Real-time Hermes Swarm & Kanban</p>
+            </div>
+            <div class="flex gap-2">
+                <input type="text" id="quick-add-input" placeholder="Quick add task..." class="bg-zinc-800 border border-zinc-700 rounded px-4 py-2 text-sm focus:outline-none focus:border-blue-500 w-96 shadow-inner">
+                <button onclick="quickAddTask()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-xs font-bold uppercase transition-all shadow-lg active:scale-95">Add</button>
+            </div>
         </div>
         <div class="flex flex-col items-end">
             <div id="last-update" class="text-xs text-zinc-500 font-mono uppercase">Updating...</div>
-            <div class="text-[10px] text-zinc-600 font-mono mt-1">SECURE ACCESS: ON</div>
+            <div class="text-[10px] text-zinc-600 font-mono mt-1 tracking-widest">SECURE ACCESS: ON</div>
         </div>
     </header>
 
-    <nav class="flex gap-4 mb-8 border-b border-zinc-800 pb-4">
+    <nav class="flex gap-6 mb-8 border-b border-zinc-800 pb-4">
         <button onclick="showView('kanban')" class="text-sm font-medium hover:text-blue-500 transition-colors" id="btn-kanban">Kanban Board</button>
+        <button onclick="showView('tree')" class="text-sm font-medium hover:text-blue-500 transition-colors text-zinc-500" id="btn-tree">Swarm Tree View</button>
         <button onclick="showView('analytics')" class="text-sm font-medium hover:text-blue-500 transition-colors text-zinc-500" id="btn-analytics">Analytics & CMS</button>
     </nav>
 
@@ -148,6 +176,13 @@ def index(username: str = Depends(authenticate)):
         </div>
     </div>
 
+    <!-- Tree View -->
+    <div id="view-tree" class="hidden">
+        <div id="tree-container" class="space-y-8">
+            <!-- Tree will be rendered here -->
+        </div>
+    </div>
+
     <!-- Analytics View -->
     <div id="view-analytics" class="hidden">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -173,15 +208,42 @@ def index(username: str = Depends(authenticate)):
         function showView(view) {
             currentView = view;
             document.getElementById('view-kanban').classList.toggle('hidden', view !== 'kanban');
+            document.getElementById('view-tree').classList.toggle('hidden', view !== 'tree');
             document.getElementById('view-analytics').classList.toggle('hidden', view !== 'analytics');
             
             document.getElementById('btn-kanban').classList.toggle('text-blue-500', view === 'kanban');
             document.getElementById('btn-kanban').classList.toggle('text-zinc-500', view !== 'kanban');
+            document.getElementById('btn-tree').classList.toggle('text-blue-500', view === 'tree');
+            document.getElementById('btn-tree').classList.toggle('text-zinc-500', view !== 'tree');
             document.getElementById('btn-analytics').classList.toggle('text-blue-500', view === 'analytics');
             document.getElementById('btn-analytics').classList.toggle('text-zinc-500', view !== 'analytics');
 
             if (view === 'analytics') fetchStats();
+            if (view === 'tree') renderTree();
         }
+
+        async function quickAddTask() {
+            const input = document.getElementById('quick-add-input');
+            const title = input.value.trim();
+            if (!title) return;
+
+            try {
+                const res = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: title, body: "Quick-added from dashboard", assignee: "programmer" })
+                });
+                if (res.ok) {
+                    input.value = '';
+                    fetchTasks();
+                    showNotification('Goal captured to Triage');
+                }
+            } catch (e) { console.error('Add failed', e); }
+        }
+
+        document.getElementById('quick-add-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') quickAddTask();
+        });
 
         async function triageTask(taskId) {
             try {
@@ -214,6 +276,7 @@ def index(username: str = Depends(authenticate)):
                 currentTasks = data.tasks;
                 currentLinks = data.links;
                 if (currentView === 'kanban') applyFiltersAndRender();
+                if (currentView === 'tree') renderTree();
                 document.getElementById('last-update').innerText = 'Sync OK: ' + new Date().toLocaleTimeString();
             } catch (e) {
                 console.error('Fetch failed', e);
@@ -247,6 +310,48 @@ def index(username: str = Depends(authenticate)):
             html += '</div></div>';
             
             container.innerHTML = html;
+        }
+
+        function renderTree() {
+            const container = document.getElementById('tree-container');
+            container.innerHTML = '';
+            
+            // Find root tasks (no parents)
+            const childrenIds = new Set(currentLinks.map(l => l.child_id));
+            const roots = currentTasks.filter(t => !childrenIds.has(t.id));
+
+            roots.forEach(root => {
+                const rootEl = document.createElement('div');
+                rootEl.innerHTML = buildTreeNode(root);
+                container.appendChild(rootEl);
+            });
+        }
+
+        function buildTreeNode(task) {
+            const children = currentLinks.filter(l => l.parent_id === task.id).map(l => currentTasks.find(t => t.id === l.child_id)).filter(t => t);
+            
+            let html = `
+                <div class="mb-4">
+                    <div class="tree-card border-l-4 border-l-blue-500 shadow-lg">
+                        <div class="flex justify-between mb-1">
+                            <span class="text-[10px] text-zinc-500 font-mono">#${task.id}</span>
+                            <span class="badge badge-${task.assignee}">${task.assignee}</span>
+                        </div>
+                        <div class="text-sm font-bold text-zinc-200">${task.title}</div>
+                        <div class="text-[10px] text-zinc-500 mt-1 uppercase font-bold tracking-tighter">${task.status}</div>
+                    </div>
+            `;
+
+            if (children.length > 0) {
+                html += '<div class="tree-node">';
+                children.forEach(child => {
+                    html += buildTreeNode(child);
+                });
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
         }
 
         function applyFiltersAndRender() {
