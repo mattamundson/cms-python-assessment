@@ -79,6 +79,20 @@ def run_python(code):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+def reassign_task(task_id, new_assignee, reason):
+    """Reassigns a task to a different specialist (programmer, researcher, designer, reviewer)."""
+    import sqlite3
+    DB_PATH = os.path.expanduser("~/.hermes/kanban.db")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE tasks SET assignee = ?, body = body || ? WHERE id = ?", 
+                     (new_assignee, f"\n\n[REASSIGNED to {new_assignee}] Reason: {reason}", task_id))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": f"Task {task_id} reassigned to {new_assignee}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 # Define tools for OpenAI format
 JARVIS_TOOLS = [
     {
@@ -164,6 +178,22 @@ JARVIS_TOOLS = [
                 "required": ["code"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reassign_task",
+            "description": "Hand off this task to another specialist. Use 'reviewer' to request a peer review of your work.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The ID of the task to reassign."},
+                    "new_assignee": {"type": "string", "enum": ["programmer", "researcher", "designer", "reviewer"], "description": "The specialist to hand off to."},
+                    "reason": {"type": "string", "description": "Why you are reassigning the task."}
+                },
+                "required": ["task_id", "new_assignee", "reason"]
+            }
+        }
     }
 ]
 
@@ -181,5 +211,7 @@ def execute_tool(name, arguments):
         return run_command(**arguments)
     elif name == "run_python":
         return run_python(**arguments)
+    elif name == "reassign_task":
+        return reassign_task(**arguments)
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}
