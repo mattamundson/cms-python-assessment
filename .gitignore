@@ -1,0 +1,7 @@
+__pycache__/
+*.tmp
+*.bak
+*.db
+.env
+data/*.csv
+outputs/
