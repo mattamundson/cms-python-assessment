@@ -34,7 +34,8 @@ def process_tasks():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     
-    cursor = conn.execute("SELECT * FROM tasks WHERE status = 'todo' ORDER BY RANDOM() LIMIT 1")
+    # Pick the highest priority task first
+    cursor = conn.execute("SELECT * FROM tasks WHERE status = 'todo' ORDER BY priority DESC, created_at ASC LIMIT 1")
     task = cursor.fetchone()
     
     if task:
