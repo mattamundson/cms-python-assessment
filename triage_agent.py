@@ -60,5 +60,5 @@ def process_triage():
 if __name__ == "__main__":
     while True:
         process_triage()
-        print("Sleeping for 30 seconds...")
-        time.sleep(30)
+        print("Sleeping for 30 minutes...")
+        time.sleep(1800)
